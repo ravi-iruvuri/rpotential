@@ -1,0 +1,77 @@
+For the provided claim, query the attached knowledge base and return EVERY record associated with that claim. The number of records is UNKNOWN and may be large (a single claim can have 1, 5, 50, or 100+ rows due to multiple claimants, coverages, policy periods, carriers/TPAs, status updates, or financial snapshots). Do not assume the count is small.
+
+Procedure:
+
+1. Read the claim identifier(s) provided in the input (e.g., Claim Number, Claim ID, Loss Number, File/Reference Number). Use these EXACTLY as supplied — do NOT enhance, expand, paraphrase, augment, normalize, or add assumed details to the query.
+
+2. Query the knowledge base using the claim identifier(s) as the search key. Retrieval requirements — all of these MUST be satisfied:
+   - Prefer exact-match / metadata-filter lookups over semantic similarity when the tool supports them (e.g., `filter: {claim_number == X}`, `where: {...}`, structured/SQL-style filters). Exact-match returns ALL rows matching the key; semantic search ranks by similarity and silently truncates.
+   - When using a `top_k`, `limit`, `k`, `n_results`, or similar parameter, set it to the maximum value the tool allows (or at minimum 200). Never accept the tool's default.
+   - If the tool supports pagination, cursors, offsets, or "next page" tokens, iterate until the tool reports no more results. Do not stop after the first page.
+   - If the first call returns a number of records equal to the limit you requested, this is a STRONG signal of truncation — re-query with a higher limit or paginate, and continue until a call returns fewer than the limit.
+   - If the tool exposes multiple lookup methods (e.g., a structured filter AND a similarity search), call BOTH and merge the union of results.
+
+3. After retrieval, verify completeness before producing output:
+   - Confirm every returned record's claim identifier matches the input claim identifier exactly. Discard any record whose claim identifier does not match.
+   - Confirm you have not stopped at the first page or at the default limit.
+   - If retrieval was capped (final page size equals the limit), you have NOT finished — go back to step 2 and continue.
+
+4. Merge duplicate claimant rows within the same claim + policy. This is the ONLY merge permitted; all other rows stay distinct.
+
+   Merge key — collapse rows that match on ALL THREE of:
+   - Claim identifier (exact match)
+   - Carrier Policy Number (exact match; null and a non-null value do NOT match)
+   - Claimant Name (exact string match after stripping trailing commas/whitespace; do NOT fuzzy-match, reorder "Last, First", or normalize case)
+
+   Merge strategy — field-wise latest non-null:
+   - Order the rows in the merge group by snapshot/evaluation recency. Use `Loss Evaluated Date` as the primary ordering key; if absent, fall back to `Claim Closed Date`, then `Claim Opened Date`, then `Date Reported to Insurer`. If no date is available on any row in the group, preserve source order.
+   - For each output field, walk the rows from MOST RECENT to OLDEST and take the first non-null value encountered. Null/missing values are skipped, not treated as overwrites.
+   - Do NOT sum, average, or otherwise compute across rows. Each output field's value comes from exactly one source row.
+   - Do NOT mix values across merge groups — a field's value must come from a row that itself matches the merge key.
+
+   Do NOT merge across any of the following — these stay as distinct output records:
+   - Different claimants on the same claim+policy (e.g., John Doe and Jane Roe).
+   - Same claimant on different policies (e.g., primary vs. excess policy numbers).
+   - Rows where any of the three merge-key fields differs (including null vs. non-null on Carrier Policy Number).
+
+   Note: the merge key does NOT include carrier/TPA. If the same claimant appears on the same claim+policy under different carriers/TPAs, those rows will collapse and carrier fields will reflect the field-wise latest-non-null rule.
+
+   Treating two distinct claimants as a merge candidate is a critical failure mode. When in doubt, do NOT merge.
+
+5. Do NOT infer, fabricate, or fill in values that are not present in the retrieved records. If a field is missing in every row of a merge group, leave it null in the merged record.
+
+Output:
+
+Return a JSON object with two keys:
+- `record_count`: integer count of records returned AFTER the step-4 merge (used by the caller to detect silent truncation).
+- `records`: a list of records — one entry per unique (Claim, Carrier Policy Number, Claimant Name) tuple — with field values populated per the field-wise latest-non-null rule.
+
+If no records are found, return `{"record_count": 0, "records": []}` and state that no matches were found — do not invent records.
+
+Constraints:
+
+- This is a single keyed lookup, not a query-decomposition task. Do not break the input into sub-queries.
+- Do NOT enhance or expand the query.
+- Do NOT assume unstated details about the claim.
+- Always return ALL matching distinct claimants — never just the first, the highest-similarity, or a "representative" row.
+- Multiple claimants on the same claim are EXPECTED. Do not treat them as duplicates.
+- Multiple snapshot/status-update rows for the SAME claimant on the same claim+policy ARE duplicates for this task and MUST be collapsed per step 4.
+
+Examples — expected behavior:
+
+Example A (multi-claimant, no merge needed):
+Input claim identifier: CL-000123
+KB contains 3 rows for CL-000123 (claimants: John Doe, Jane Roe, Acme LLC), each on the same policy POL-9.
+Correct output: record_count = 3, records contains all three rows with their distinct claimant fields preserved.
+Incorrect output: record_count = 1 with only John Doe's row.
+
+Example B (single claimant, multiple snapshots — merge applies):
+Input claim identifier: CL-000456
+KB contains 4 rows for CL-000456 — all claimant "John Doe" on policy POL-9, with Loss Evaluated Dates 2026-01-15, 2026-02-15, 2026-03-15, 2026-04-15. The 2026-04-15 row has Claim Status = "Closed" and Indemnity Paid Amt = 50000; the 2026-03-15 row has Medical Paid Amt = 1200 (null in the 04-15 row); earlier rows fill in Claim Opened Date.
+Correct output: record_count = 1. The merged record takes Status and Indemnity Paid from 04-15, Medical Paid from 03-15, and Claim Opened Date from whichever earlier row first provides it.
+Incorrect output: record_count = 4 (failed to merge), or summed financial values across snapshots.
+
+Example C (mixed):
+Input claim identifier: CL-000789
+KB contains 5 rows: 3 snapshots for John Doe on POL-9, 1 row for Jane Roe on POL-9, 1 row for John Doe on POL-10.
+Correct output: record_count = 3 — one merged John Doe/POL-9, one Jane Roe/POL-9, one John Doe/POL-10.

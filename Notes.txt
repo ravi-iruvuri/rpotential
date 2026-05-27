@@ -1,0 +1,325 @@
+============================================================================
+  Job Order Prioritization — Usage Runbook
+============================================================================
+
+PREREQUISITES
+-------------
+- Python 3.x with psycopg installed in the local venv:
+      ./myenv/bin/pip install 'psycopg[binary]>=3.1'
+- A Neon Postgres (or any Postgres 15+) database with the schema applied:
+      psql ... -f job_order_prioritization_schema.sql
+- A DSN for the database, e.g.:
+      postgresql://USER:PASSWORD@HOST:5432/DBNAME
+  Either pass it via --dsn on every command, or export PG* env vars:
+      export PGHOST=... PGUSER=... PGPASSWORD=... PGDATABASE=...
+
+
+============================================================================
+  STEP 1 — One-time DB migration (only for already-deployed databases)
+============================================================================
+This adds the job_uploads table, the jobs.upload_id column, and backfills
+all existing rows under a single synthetic "historical_initial_load" batch.
+
+    PGPASSWORD=... psql -h HOST -U USER -d DBNAME \
+        -f migration_001_add_job_uploads.sql
+
+Verify:
+    SELECT * FROM jop.job_uploads ORDER BY upload_id;
+    SELECT COUNT(*) FROM jop.jobs WHERE upload_id IS NULL;  -- expect 0
+
+
+============================================================================
+  STEP 2 — Initial bulk load (historical 42K jobs)
+============================================================================
+Run the pipeline against all four CSVs. Recommend a dry-run first so you
+see how many rows would be rejected before committing anything.
+
+Dry-run (validates without writing):
+
+    ./myenv/bin/python load_pipeline.py \
+        --jobs       'Jobs Data - Prasad.xlsx - Jobs Report.csv' \
+        --subs       'Jobs Data - Prasad.xlsx - Client Subs.csv' \
+        --placements 'Jobs Data - Prasad.xlsx - Placements.csv' \
+        --starts     'Jobs Data - Prasad.xlsx - Starts.csv' \
+        --schema jop --dsn '...' \
+        --dry-run
+
+Real run (drop --dry-run):
+
+    ./myenv/bin/python load_pipeline.py \
+        --jobs       'Jobs Data - Prasad.xlsx - Jobs Report.csv' \
+        --subs       'Jobs Data - Prasad.xlsx - Client Subs.csv' \
+        --placements 'Jobs Data - Prasad.xlsx - Placements.csv' \
+        --starts     'Jobs Data - Prasad.xlsx - Starts.csv' \
+        --schema jop --dsn '...'
+
+Output ends with the upload_id assigned to this batch, e.g.:
+
+      this batch is upload_id = 2
+      score it with:  score_and_route.py --upload-id 2 --schema jop --dsn ...
+
+Every rejected row is written to a CSV next to where you ran the command:
+      load_errors_<YYYYMMDD-HHMMSS>.csv
+Override with --log-file PATH if you want a fixed location.
+
+
+============================================================================
+  STEP 3 — Populate feature lookup tables
+============================================================================
+Required before any scoring can happen. Defines the training window for
+the per-company / per-category / per-skill / per-client_type fill rates.
+
+    ./myenv/bin/python populate_feature_lookups.py \
+        --start 2023-01-01 --end 2025-12-31 \
+        --schema jop --activate \
+        --notes "v1 heuristic baseline" \
+        --dsn '...'
+
+Quarterly recompute — same window or extended, replace prior version:
+
+    ./myenv/bin/python populate_feature_lookups.py \
+        --start 2023-01-01 --end 2026-03-31 \
+        --replace --activate --dsn '...'
+
+Verify the active version exists:
+
+    SELECT version_id, training_period_start, training_period_end,
+           global_base_fill_rate, smoothing_min_n
+      FROM jop.feature_lookup_version WHERE is_active;
+
+
+============================================================================
+  STEP 4 — Score & route
+============================================================================
+Default target: every job in a non-terminal status (Accepting Candidates,
+On Hold) — i.e. active orders only. Historical/terminal jobs are training
+data, not scoring targets.
+
+    # All currently-active orders (typical batch / cron call)
+    ./myenv/bin/python score_and_route.py --schema jop --dsn '...'
+
+    # Score only one specific upload batch
+    ./myenv/bin/python score_and_route.py --upload-id 2 --dsn '...'
+
+    # Score one specific job (Phase 1 — new order arrived via API)
+    ./myenv/bin/python score_and_route.py --job-id 1567631 --dsn '...'
+
+    # Backfill every job in the table including historical
+    ./myenv/bin/python score_and_route.py --all-jobs --dsn '...'
+
+Add --dry-run to count target rows without writing.
+
+
+============================================================================
+  STEP 5 — Per-upload workflow (the everyday loop)
+============================================================================
+For each new CSV batch arriving from the source system:
+
+    1. Load:
+         ./myenv/bin/python load_pipeline.py \
+             --jobs new_batch.csv --subs ... --placements ... --starts ... \
+             --dsn '...'
+       → Note the printed upload_id, e.g. upload_id = 7
+
+    2. Score just that batch (FK-safe, doesn't touch other batches):
+         ./myenv/bin/python score_and_route.py --upload-id 7 --dsn '...'
+
+    3. Check the routing queues:
+         SELECT current_tier, COUNT(*) FROM jop.job_routing
+          WHERE last_score_id IN (
+              SELECT score_id FROM jop.job_priority_scores
+               WHERE job_id IN (SELECT job_id FROM jop.jobs WHERE upload_id = 7)
+          )
+          GROUP BY current_tier ORDER BY 1;
+
+
+============================================================================
+  USEFUL QUERIES
+============================================================================
+
+-- All uploads, newest first
+SELECT upload_id, uploaded_at, source_file, row_count
+  FROM jop.job_uploads
+ ORDER BY uploaded_at DESC;
+
+-- Jobs per upload
+SELECT upload_id, COUNT(*) AS jobs FROM jop.jobs GROUP BY 1 ORDER BY 1;
+
+-- Just the jobs from a specific upload
+SELECT * FROM jop.jobs WHERE upload_id = 7;
+
+-- Latest score per job (top 10 by priority)
+SELECT * FROM jop.v_latest_job_score
+ ORDER BY priority_score DESC LIMIT 10;
+
+-- Current routing state with score breakdown
+SELECT r.job_id, r.current_tier, r.routed_at, r.sla_deadline,
+       s.priority_score, s.company_component, s.category_component
+  FROM jop.job_routing r
+  JOIN jop.job_priority_scores s ON s.score_id = r.last_score_id
+ ORDER BY s.priority_score DESC LIMIT 20;
+
+-- Tier distribution across all routed jobs
+SELECT current_tier, COUNT(*) FROM jop.job_routing GROUP BY 1 ORDER BY 1;
+
+-- Open SLA breaches
+SELECT * FROM jop.v_sla_breaches LIMIT 20;
+
+-- Reject-log breakdown (after pipeline run)
+SELECT table_name, COUNT(*) FROM (
+    SELECT split_part(line, ',', 3) AS table_name
+      FROM (SELECT regexp_split_to_table(pg_read_file(''), '\n') AS line) t
+) x GROUP BY 1;
+-- (or just open load_errors_*.csv in a spreadsheet)
+
+
+============================================================================
+  RE-UPLOADING A JOB WITH CORRECTIONS
+============================================================================
+The loader treats re-uploads idempotently. For each job_id in your CSV:
+
+  - NEW job (not in DB)           → INSERT
+  - EXISTING job, same data       → SKIP (source_row_hash matches)
+  - EXISTING job, data changed    → UPDATE jobs row + capture prior
+                                    version to jobs_history with the
+                                    new upload_id stamped as
+                                    superseded_by_upload_id
+
+End-of-load summary shows the breakdown, e.g.:
+      Done. upload_id=8: 142 inserted · 37 updated (history captured)
+                                       · 1,205 unchanged (skipped).
+
+Inspect the history of a single job:
+
+    -- Current state
+    SELECT job_id, upload_id, ingested_at, status, num_openings, category
+      FROM jop.jobs WHERE job_id = 1567631;
+
+    -- All prior versions, newest-first
+    SELECT history_id, superseded_at,
+           prior_upload_id, superseded_by_upload_id,
+           status, num_openings, category, job_title
+      FROM jop.jobs_history
+     WHERE job_id = 1567631
+     ORDER BY superseded_at DESC;
+
+What changed in a specific upload (which jobs it corrected):
+
+    SELECT h.job_id,
+           h.status        AS prior_status,        j.status,
+           h.num_openings  AS prior_openings,      j.num_openings,
+           h.category      AS prior_category,      j.category
+      FROM jop.jobs_history h
+      JOIN jop.jobs         j ON j.job_id = h.job_id
+     WHERE h.superseded_by_upload_id = 8;
+
+How many corrections does each upload contain:
+
+    SELECT superseded_by_upload_id AS upload_id,
+           COUNT(*)                AS jobs_corrected
+      FROM jop.jobs_history
+     GROUP BY 1 ORDER BY 1;
+
+Notes:
+  - Audit-only updates (e.g. flipping category_imputed to TRUE after
+    agent enrichment) do NOT create history rows — the trigger only
+    fires when source_row_hash changes.
+  - Duplicate job_ids within the same CSV are deduped (last occurrence
+    kept) before INSERT; you'll see a "deduped: dropped N row(s)" line
+    in the loader output if that happened.
+
+
+============================================================================
+  ROLLBACK A BAD UPLOAD
+============================================================================
+FK is ON DELETE NO ACTION by default, so children must be cleared first.
+Run in this exact order (replace 7 with your upload_id):
+
+    BEGIN;
+
+    DELETE FROM jop.job_routing
+     WHERE job_id IN (SELECT job_id FROM jop.jobs WHERE upload_id = 7);
+
+    DELETE FROM jop.job_priority_scores
+     WHERE job_id IN (SELECT job_id FROM jop.jobs WHERE upload_id = 7);
+
+    DELETE FROM jop.starts
+     WHERE job_id IN (SELECT job_id FROM jop.jobs WHERE upload_id = 7);
+
+    DELETE FROM jop.placements
+     WHERE job_id IN (SELECT job_id FROM jop.jobs WHERE upload_id = 7);
+
+    DELETE FROM jop.client_submissions
+     WHERE job_id IN (SELECT job_id FROM jop.jobs WHERE upload_id = 7);
+
+    DELETE FROM jop.jobs_history
+     WHERE job_id IN (SELECT job_id FROM jop.jobs WHERE upload_id = 7)
+        OR superseded_by_upload_id = 7;
+
+    DELETE FROM jop.jobs        WHERE upload_id = 7;
+    DELETE FROM jop.job_uploads WHERE upload_id = 7;
+
+    -- Inspect counts here. If wrong, ROLLBACK; otherwise:
+    COMMIT;
+
+
+============================================================================
+  SCRIPT REFERENCE
+============================================================================
+  load_pipeline.py                  End-to-end ingest (jobs → subs →
+                                    placements → starts → company_alias)
+  load_jobs_csv.py                  Standalone jobs loader (called by pipeline)
+  load_subs_placements_starts.py    Standalone subs/placements/starts loader
+                                    (called by pipeline). --aliases-only to
+                                    only derive company_alias from existing data.
+  populate_feature_lookups.py       Compute the 5 fill-rate lookup tables
+                                    for one training window. --activate to
+                                    promote to live.
+  score_and_route.py                Score active orders, upsert job_routing.
+                                    Filter target set with one of:
+                                       --job-id N
+                                       --upload-id N
+                                       --all-jobs
+
+  migration_001_add_job_uploads.sql One-time DB migration to add upload
+                                    tracking to an already-deployed schema.
+  migration_002_add_jobs_history.sql One-time DB migration to add the
+                                    jobs_history audit table + trigger
+                                    that captures prior versions when
+                                    re-uploads contain corrections.
+
+
+============================================================================
+  COMMON FLAGS (all Python scripts)
+============================================================================
+  --schema jop          Postgres schema (default: jop)
+  --dsn '...'           Postgres DSN; falls back to PG* env vars if omitted
+  --dry-run             Validate / count without writing
+  --log-file PATH       Override the default load_errors_<timestamp>.csv path
+                        (load_pipeline, load_jobs_csv, load_subs_placements_starts)
+
+
+============================================================================
+  TROUBLESHOOTING
+============================================================================
+- "No active feature_lookup_version":
+      Run populate_feature_lookups.py with --activate first.
+
+- "job_id not in jop.jobs" in load_errors_*.csv:
+      The Jobs Report CSV does not contain that job_id. Either the two
+      CSV extracts span different time windows, or the Jobs Report filter
+      was too narrow. Either re-pull the Jobs Report or accept the drop.
+
+- "module not found: psycopg":
+      You ran `python` instead of `./myenv/bin/python`. Activate the venv
+      (source myenv/bin/activate) or invoke the venv's interpreter directly.
+
+- A version for (start, end) already exists:
+      Pass --replace to delete the prior lookup rows and recompute, or
+      pick a different training window.
+
+- ON CONFLICT errors during INSERT:
+      All loaders use ON CONFLICT DO NOTHING; re-running the same CSV is
+      always safe (idempotent). If you see a CHECK constraint violation
+      instead, the reference table is missing a value — inspect the error
+      log to find which row.
