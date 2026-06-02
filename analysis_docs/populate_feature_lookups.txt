@@ -1,0 +1,100 @@
+POPULATE FEATURE LOOKUPS — HOW IT WORKS
+========================================
+
+The Big Picture
+---------------
+The script answers one question per dimension: "For jobs in this time window,
+what fraction ended as 'Placed'?" It computes that answer across 5 different
+groupings and stores them as lookup tables. The scoring view
+(v_priority_score_calc) then joins against these tables at query time.
+
+
+Step 1 — Create a Version Row
+------------------------------
+insert_version() inserts one row into feature_lookup_version that acts as the
+parent record for all 5 lookup tables. It records:
+
+  - The training date window (--start / --end)
+  - The smoothing parameters (base_rate=0.085, min_n=20)
+  - Returns a version_id that every lookup row will foreign-key to
+
+This means you can have multiple versioned snapshots (e.g. quarterly retrains)
+coexisting in the DB without overwriting each other.
+
+
+Step 2 — What Jobs Are Included?
+---------------------------------
+All 5 lookup functions use the same DATE_FILTER:
+
+    JOIN job_status_ref s ON s.status_code = j.status
+    WHERE s.is_terminal = TRUE
+      AND j.date_added >= start
+      AND j.date_added <  end + 1 day
+
+is_terminal = TRUE excludes 'On Hold' and 'Accepting Candidates' — jobs that
+are still in-flight can't be used to measure fill rate because their final
+outcome isn't known yet.
+
+
+Step 3 — The 5 Lookup Tables
+------------------------------
+Each table is a simple GROUP BY aggregate counting total orders and placed
+orders, inserted in one SQL statement:
+
+  Table                              Grouped by               Special rule
+  ---------------------------------  -----------------------  --------------------------
+  company_fill_rate_lookup           company_id               Smoothed (Bayesian) + tier
+  company_category_fill_rate_lookup  company_id + category    Only cells with >= 5 orders
+  category_fill_rate_lookup          category                 NULLs excluded
+  skill_fill_rate_lookup             required_skill           NULLs excluded
+  client_type_fill_rate_lookup       client_type              NULLs excluded
+
+
+The Smoothing (company table only)
+------------------------------------
+Raw fill rate for a company with 2 orders and 1 placement would be 50% —
+misleading. The smoothing formula pulls it back toward the global 8.5% prior
+(Empirical Bayes shrinkage):
+
+    smoothed = (placed_orders + base_rate x min_n) / (total_orders + min_n)
+             = (1 + 0.085 x 20) / (2 + 20)
+             = (1 + 1.7) / 22
+             = 0.123   <- much closer to the global average
+
+As a company accumulates more orders, the +20 virtual samples become negligible
+and the smoothed rate converges to the raw rate. The smoothed value is then
+bucketed into T1/T2/T3 by joining priority_tier_ref.
+
+  GLOBAL_BASE_FILL_RATE_DEFAULT = 0.0850  (8.5% — empirical positive-class
+                                            rate across all 42,422 orders)
+  SMOOTHING_MIN_N_DEFAULT       = 20      (equivalent sample size of the prior)
+
+
+Step 4 — Activate
+------------------
+If --activate is passed, activate() flips is_active = TRUE on the new version
+and FALSE on all others. The schema enforces only one active version at a time
+via a partial unique index. The scoring view v_priority_score_calc always reads
+from whichever version has is_active = TRUE.
+
+
+Typical Run
+-----------
+    python populate_feature_lookups.py \
+        --start 2023-01-01 --end 2025-12-31 \
+        --schema rpotential --activate \
+        --dsn 'postgresql://...'
+
+This gives you one active version covering the full 3-year dataset, and the
+priority scorer immediately starts using it.
+
+
+Re-computing an Existing Version
+----------------------------------
+    python populate_feature_lookups.py \
+        --start 2023-01-01 --end 2025-12-31 \
+        --replace --activate --dsn '...'
+
+Pass --replace to delete the existing version for that (start, end) window and
+recompute from scratch. Without --replace the script exits with an error if the
+window already exists, preventing accidental overwrites.

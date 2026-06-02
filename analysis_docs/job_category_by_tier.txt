@@ -1,0 +1,316 @@
+CATEGORY IMPUTATION IMPACT ANALYSIS — TIER DISTRIBUTION
+=========================================================
+rpotential · Upload ID: 1 · 42,422 Jobs · Jan 2023 – Dec 2025
+
+
+═══════════════════════════════════════════════════════════════════════════════
+1. THE PROBLEM — MISSING CATEGORIES WERE SUPPRESSING SCORES
+═══════════════════════════════════════════════════════════════════════════════
+
+The priority score formula allocates 20% weight to the category fill rate:
+
+  category_component = category_fill_rate × 0.20
+
+A job with NULL category receives 0 for this component, losing up to 0.067
+points (Service Desk fill rate 0.334 × 0.20 = 0.067) — often the exact margin
+that separates T3 from T2.
+
+BEFORE IMPUTATION — Category coverage:
+  Total jobs          :  42,422
+  With category       :  25,641   (60.5%)  ← recruiter-assigned
+  NULL category       :  16,781   (39.5%)  ← receiving zero for 20% of score
+  Unresolvable        :       0   (  0.0%)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+2. IMPUTATION APPROACH — TWO-TIER STRATEGY
+═══════════════════════════════════════════════════════════════════════════════
+
+All NULL-category job titles follow a VMS prefix pattern:
+  Raw title:   "BACJP00199254 - Application Programmer V"
+  Clean title: "Application Programmer V"  (after stripping prefix)
+
+Tier 1 — Exact clean-title match (impute_categories.py):
+  Strip the VMS order prefix, then look up the most frequent category
+  assigned to that same clean title in the existing recruiter-assigned jobs.
+  Handles ~96% of NULL rows.
+
+  Also handles double prefix:  "BACJP00199254 - US - Sr Systems Engineer"
+                             →  "Sr Systems Engineer"
+
+Tier 2 — Keyword rules:
+  For titles with no Tier 1 match (mostly USA_* generic placeholders),
+  apply a keyword lookup against the full category taxonomy.
+
+  Examples:
+    "USA_Enterprise Architect"  → Software Development
+    "USA_Data Scientist"        → Data & Business Intelligence
+    "USA_Network Administrator" → Infrastructure
+    "USA_Business Consultant"   → Business Professional
+
+Skip (noisy):
+  Titles like 'US', 'USA', 'x' where imputation would be unreliable.
+
+IMPUTATION RESULTS:
+  Tier 1 (title match)  :  12,301   (81.2% of imputed)
+  Tier 2 (keyword rule) :   2,858   (18.8% of imputed)
+  Skipped (noisy)       :      10
+  Unresolved (NULL kept):   1,612   ( 9.6% — genuinely ambiguous)
+  ─────────────────────────────────
+  Total imputed         :  15,159   (90.3% coverage of original 16,781 NULLs)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+3. AFTER IMPUTATION — CATEGORY COVERAGE
+═══════════════════════════════════════════════════════════════════════════════
+
+AFTER IMPUTATION — Category coverage:
+  Total jobs              :  42,422
+  With category           :  40,800   (96.2%)
+    — Recruiter-assigned  :  25,641   (60.5%)
+    — Imputed             :  15,159   (35.7%)
+  Still NULL              :   1,622   ( 3.8%)  ← down from 39.5%
+
+NULL category reduced from 39.5% → 3.8%  (improvement: −35.7 percentage points)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+4. CATEGORY DISTRIBUTION — BEFORE vs AFTER
+═══════════════════════════════════════════════════════════════════════════════
+
+  Category                         Before   Imputed   After    % of Total
+  ──────────────────────────────── ───────  ───────  ───────  ──────────
+  Software Development               7,526   +6,363   13,889     32.74%
+  Project Management                 2,565   +1,498    4,063      9.58%
+  Business Analysis                  1,946   +1,378    3,324      7.84%
+  Business Professional              2,082   +1,058    3,140      7.40%
+  Infrastructure                     1,664     +869    2,533      5.97%
+  Data & Business Intelligence       1,844     +515    2,359      5.56%
+  Product Development Engineering    1,539     +695    2,234      5.27%
+  Manufacturing Engineering          1,066     +394    1,460      3.44%
+  Technician                         1,082     +335    1,417      3.34%
+  Service Desk                         986     +468    1,454      3.43%
+  QA & Testing                         830     +460    1,290      3.04%
+  Emerging Technologies                532     +436      968      2.28%
+  Emerging Technologies & Data         667     +170      837      1.97%
+  Quality Engineering                  591     +164      755      1.78%
+  Research & Development               294     +110      404      0.95%
+  Civil Engineering                    167      +34      201      0.47%
+  Design/Drafting                        0      +75       75      0.18%
+  Artificial Intelligence                0      +49       49      0.12%
+  Electrical Engineering                 0      +38       38      0.09%
+  Embedded Systems                       0      +24       24      0.06%
+  Engineering Admin/Documentation        0      +17       17      0.04%
+  Regulatory Affairs                     0       +8        8      0.02%
+  A&E                                    0       +1        1      0.00%
+  (NULL — unresolved)               16,781  -15,159    1,622      3.82%
+  ──────────────────────────────── ───────  ───────  ───────  ──────────
+  TOTAL                             42,422            42,422
+
+Software Development absorbed the most imputed jobs (+6,363) because dominant
+VMS title patterns — "Application Programmer V", "USA_Developer",
+"Application Architect V" — all map there. However, Software Development has
+the lowest fill rate (0.083) of all categories, so score boost is modest.
+The higher-impact imputations were in Service Desk (+468, fill rate 0.334) and
+Technician (+335, fill rate 0.318) which deliver the strongest category signal.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+5. TIER DISTRIBUTION — THREE SNAPSHOTS
+═══════════════════════════════════════════════════════════════════════════════
+
+                               T1              T2              T3
+  Snapshot                Jobs    %       Jobs    %       Jobs    %
+  ─────────────────────── ─────  ──────   ─────  ──────   ──────  ──────
+  A. Original heuristic     296   0.70%   5,016  11.83%  37,110  87.48%
+     (before any changes)
+  B. + Category imputation  299   0.71%   5,390  12.71%  36,733  86.59%
+     (heuristic weights)
+  C. + Blended weights      318   0.75%   5,663  13.35%  36,441  85.90%
+     (60% heuristic +
+      40% learned LR)
+  ─────────────────────── ─────  ──────   ─────  ──────   ──────  ──────
+  Net change (A → C)        +22  +0.05%    +647  +1.52%    -669  -1.57%
+
+  Avg priority score by tier (snapshot C):
+    T1 : 0.4826   (was 0.4656 in A — +3.7%)
+    T2 : 0.2183   (was 0.2165 in A — +0.8%)
+    T3 : 0.0717   (was 0.0662 in A — +8.3%)  ← biggest relative gain
+
+
+═══════════════════════════════════════════════════════════════════════════════
+6. CHANGE ANALYSIS — WHAT DROVE EACH STEP
+═══════════════════════════════════════════════════════════════════════════════
+
+STEP A → B  (Category imputation: +374 into T2, +3 into T1)
+  ──────────────────────────────────────────────────────────
+  804 imputed-category jobs now sit in T2 (they were previously in T3
+  with a zero category component).
+
+  Most impactful imputed categories for tier movement:
+    Service Desk          fill_rate 0.334  →  category_component = +0.067
+    Technician            fill_rate 0.318  →  category_component = +0.064
+    Business Professional fill_rate 0.174  →  category_component = +0.035
+    Project Management    fill_rate 0.128  →  category_component = +0.026
+
+  Why only 374 net moved (not all 15,159):
+    Most imputed jobs are Software Development (fill_rate 0.083), giving a
+    category component of only 0.017. Combined with a low company component
+    (most companies cluster near the global 8.5% prior = 0.038), the total
+    score for a typical imputed Software Development job:
+      0.038 + 0.017 = 0.055  →  still well below T2 threshold of 0.15.
+
+STEP B → C  (Blended weights: +273 more into T2, +19 more into T1)
+  ──────────────────────────────────────────────────────────────────
+  Blended weights shift company from 0.45 → 0.5016 and hour bin from
+  0.05 → 0.0824. This re-ranks borderline jobs at companies whose smoothed
+  fill rate was just below the T2 breakeven:
+
+    Company score needed to reach T2 (score ≥ 0.15):
+      Heuristic: company_fill_rate ≥ 0.333  (0.333 × 0.45 = 0.150)
+      Blended:   company_fill_rate ≥ 0.299  (0.299 × 0.5016 = 0.150)
+
+    Companies with fill rates in the 0.299–0.333 range — previously just
+    below the threshold — crossed into T2 purely from the weight shift.
+    This accounts for most of the 273 additional T2 promotions.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+7. IMPUTED JOB DISTRIBUTION BY TIER (FINAL STATE)
+═══════════════════════════════════════════════════════════════════════════════
+
+  Tier   Imputed Jobs   Recruiter Jobs   Still NULL   Total
+  ─────  ────────────   ──────────────   ──────────   ──────
+  T1              4              313            1       318
+  T2            804            4,744          115     5,663
+  T3         14,351           20,584        1,506    36,441
+  ─────  ────────────   ──────────────   ──────────   ──────
+  TOTAL      15,159           25,641        1,622    42,422
+
+Key observations:
+  - T1 is overwhelmingly recruiter-assigned (98.7%): highest-scoring jobs
+    were already correctly categorised. T1 is driven by company fill rate
+    (weight 0.50), not category, so imputation had minimal effect there.
+  - T2 has 804 imputed jobs (14.2% of T2): these crossed the T2 threshold
+    only after receiving a category signal.
+  - T3 still holds 14,351 imputed jobs (39.4% of T3): imputation helped
+    their scores but company fill rate is too low for most to reach T2.
+  - 1,506 still-NULL jobs remain in T3 (noisy/unresolvable titles).
+
+
+═══════════════════════════════════════════════════════════════════════════════
+8. T2 CATEGORY BREAKDOWN — FINAL STATE
+═══════════════════════════════════════════════════════════════════════════════
+
+  Category                         T2 Jobs   % of T2
+  ─────────────────────────────── ─────────  ──────
+  Software Development               1,056    18.6%
+  Business Professional                717    12.7%
+  Project Management                   568    10.0%
+  Service Desk                         565    10.0%
+  Data & Business Intelligence         448     7.9%
+  Technician                           375     6.6%
+  Business Analysis                    374     6.6%
+  Product Development Engineering      261     4.6%
+  Manufacturing Engineering            256     4.5%
+  Infrastructure                       248     4.4%
+  Emerging Technologies & Data         153     2.7%
+  Emerging Technologies                131     2.3%
+  Quality Engineering                  120     2.1%
+  NULL (unresolved)                    115     2.0%
+  QA & Testing                         112     2.0%
+  All other categories                 114     2.0%
+  ─────────────────────────────── ─────────  ──────
+  TOTAL                              5,663   100.0%
+
+Service Desk and Technician punch above their weight in T2:
+  Service Desk : 10.0% of T2 vs 3.4% of all jobs  → 2.9× overrepresented
+  Technician   :  6.6% of T2 vs 3.3% of all jobs  → 2.0× overrepresented
+This confirms that high fill-rate categories are strong T2 promotion signals.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+9. TIER BREAKDOWN BY JOB STATUS (FINAL STATE)
+═══════════════════════════════════════════════════════════════════════════════
+
+── T1 — 318 jobs ───────────────────────────────────────────
+  Status                          Jobs   % of T1
+  ────────────────────────────── ──────  ───────
+  Placed                            245    77.0%
+  Administrative Close               39    12.3%
+  Covered                             8     2.5%
+  Accepting Candidates                5     1.6%   ← active, route now
+  On Hold                             1     0.3%
+  Cancelled                           1     0.3%
+  Tier total                        318
+
+── T2 — 5,663 jobs ─────────────────────────────────────────
+  Status                          Jobs   % of T2
+  ────────────────────────────── ──────  ───────
+  Placed                          1,835    32.4%
+  Administrative Close            1,462    25.8%
+  Filled by Competition             593    10.5%
+  Cancelled                         572    10.1%
+  Filled by Client                  442     7.8%
+  On Hold                           200     3.5%
+  Covered                           158     2.8%
+  Accepting Candidates               91     1.6%   ← active, assign within 8h
+  Declined                           33     0.6%
+  Archive                             4     0.1%
+  Tier total                      5,663 (was 5,390 before blended weights)
+
+── T3 — 36,441 jobs ────────────────────────────────────────
+  Status                          Jobs   % of T3
+  ────────────────────────────── ──────  ───────
+  Administrative Close           18,452    50.6%
+  Cancelled                       4,268    11.7%
+  Filled by Competition           3,867    10.6%
+  Filled by Client                3,153     8.7%
+  Placed                          1,515     4.2%
+  Archive                         1,485     4.1%
+  On Hold                         1,362     3.7%
+  Declined                        1,077     3.0%
+  Accepting Candidates              811     2.2%   ← active, deprioritize
+  Covered                           743     2.0%
+  Tier total                     36,441 (was 37,110 before any changes)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+10. ACTIVE ORDERS ONLY (ACCEPTING CANDIDATES)
+═══════════════════════════════════════════════════════════════════════════════
+
+  Tier   Active Jobs   Action per SLA spec
+  ─────  ───────────   ──────────────────────────────────────────
+  T1           5       Route to senior recruiter within 30 minutes
+  T2          91       Assign within 8 hours
+  T3         811       Deprioritize; flag after 48h with no submission
+  ─────  ───────────
+  TOTAL      907
+
+
+═══════════════════════════════════════════════════════════════════════════════
+11. SUMMARY — KEY METRICS BEFORE AND AFTER
+═══════════════════════════════════════════════════════════════════════════════
+
+  Metric                                   Before        After       Change
+  ──────────────────────────────────────── ──────       ──────       ──────
+  NULL category count                      16,781        1,622       -90.3%
+  NULL category %                           39.5%         3.8%       -35.7pp
+  Jobs with category signal                25,641       40,800       +59.1%
+  T1 jobs                                     296          318        +7.4%
+  T1 %                                       0.70%        0.75%      +0.05pp
+  T2 jobs                                   5,016        5,663       +12.9%
+  T2 %                                      11.83%       13.35%      +1.52pp
+  T3 jobs                                  37,110       36,441        -1.8%
+  T3 %                                      87.48%       85.90%      -1.57pp
+  Avg T1 priority score                     0.4656       0.4826       +3.7%
+  Avg T2 priority score                     0.2165       0.2183       +0.8%
+  Avg T3 priority score                     0.0662       0.0717       +8.3%
+  Total jobs moved out of T3                   —           +669          —
+
+The category imputation recovered a meaningful scoring signal for 15,159 jobs
+(35.7% of the dataset) that were previously invisible to the category component.
+Combined with blended weights from the logistic regression model, 669 jobs
+moved permanently out of T3 and will receive appropriate recruiter attention
+under the routing SLA. The average T3 score lifted 8.3%, reflecting that even
+jobs remaining in T3 are now scored more accurately with their true category.

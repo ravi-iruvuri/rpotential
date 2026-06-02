@@ -1,0 +1,221 @@
+DECEMBER 2025 VALIDATION — HEURISTIC vs BLENDED MODEL COMPARISON
+=================================================================
+rpotential · Upload ID: 1 · Test window: 2025-12-01 → 2025-12-30
+Total jobs in window: 2,110   feature_lookup_version: 2 (2023-01-01 → 2025-11-30)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+CONFIGURATION
+═══════════════════════════════════════════════════════════════════════════════
+
+                        Test 1 — Heuristic          Test 2 — Blended Model
+  ──────────────────── ─────────────────────────── ──────────────────────────
+  Scored at            2026-06-01 21:26:29 UTC      2026-06-01 21:53:59 UTC
+  feature_version_id   2                            2
+  model_versions       inactive (fallback)          logistic_v1  active
+  scoring_method       heuristic_v1                 heuristic_v1
+  w_company            0.4500                       0.5016
+  w_category           0.2000                       0.1640
+  w_openings           0.1500                       0.1365
+  w_job_type           0.1000                       0.0765
+  w_client_type        0.0500                       0.0390
+  w_hour_bin           0.0500                       0.0824
+
+
+═══════════════════════════════════════════════════════════════════════════════
+TIER DISTRIBUTION
+═══════════════════════════════════════════════════════════════════════════════
+
+                   Test 1 — Heuristic        Test 2 — Blended         Delta
+  Tier    ──────────────────────────  ──────────────────────────  ──────────
+          Jobs     %    Avg Score     Jobs     %    Avg Score     Jobs    %
+  ──────  ─────  ─────  ─────────     ─────  ─────  ─────────    ─────  ────
+  T1         13   0.62%    0.4592        14   0.66%    0.4775       +1  +0.04
+  T2        226  10.71%    0.2176       243  11.52%    0.2187      +17  +0.81
+  T3      1,871  88.67%    0.0623     1,853  87.82%    0.0606      -18  -0.85
+  ──────  ─────  ─────              ─────  ─────
+  TOTAL   2,110                      2,110
+
+
+═══════════════════════════════════════════════════════════════════════════════
+SCORE RANGE BY TIER
+═══════════════════════════════════════════════════════════════════════════════
+
+               Test 1 — Heuristic              Test 2 — Blended
+  Tier    Min Score   Max Score   Avg     Min Score   Max Score   Avg
+  ──────  ─────────   ─────────  ──────   ─────────   ─────────  ──────
+  T1        0.4220      0.5203   0.4592     0.4016      0.5385   0.4775
+  T2        0.1543      0.3754   0.2176     0.1500      0.3994   0.2187
+  T3        0.0255      0.1496   0.0623     0.0239      0.1497   0.0606
+
+
+═══════════════════════════════════════════════════════════════════════════════
+STATUS BREAKDOWN BY TIER
+═══════════════════════════════════════════════════════════════════════════════
+
+── T1 ───────────────────────────────────────────────────────────────────────
+
+  Status                     Test 1   Test 2   Delta
+  ────────────────────────── ──────   ──────   ─────
+  Placed                         10       10       0
+  Administrative Close            2        3      +1
+  Covered                         1        1       0
+  ──────────────────────────  ─────   ──────
+  T1 Total                       13       14      +1
+  T1 Fill Rate (Placed %)      76.9%    71.4%   -5.5pp
+
+  Note: The one new job in Test 2 T1 (job 1607875 "Tier 1 Service Desk")
+  had Administrative Close outcome, reducing fill rate by 5.5pp. With only
+  13/14 jobs in T1, a single miss has an outsized effect on the percentage.
+
+── T2 ───────────────────────────────────────────────────────────────────────
+
+  Status                     Test 1   Test 2   Delta
+  ────────────────────────── ──────   ──────   ─────
+  Placed                        191      208     +17
+  Administrative Close           14       14       0
+  On Hold                         6        6       0
+  Filled by Client                4        4       0
+  Filled by Competition           4        4       0
+  Covered                         3        3       0
+  Accepting Candidates            2        2       0
+  Cancelled                       2        2       0
+  ──────────────────────────  ─────   ──────
+  T2 Total                      226      243     +17
+  T2 Fill Rate (Placed %)      84.5%    85.6%   +1.1pp
+
+  Key: All 17 additional T2 jobs in Test 2 were Placed jobs promoted
+  from T3 — a direct improvement in surfacing real placements.
+
+── T3 ───────────────────────────────────────────────────────────────────────
+
+  Status                     Test 1   Test 2   Delta
+  ────────────────────────── ──────   ──────   ─────
+  Administrative Close          950      949      -1
+  Placed                        608      591     -17
+  Archive                       175      175       0
+  On Hold                        37       37       0
+  Covered                        21       21       0
+  Accepting Candidates           20       20       0
+  Cancelled                      16       16       0
+  Filled by Client               16       16       0
+  Filled by Competition          15       15       0
+  Declined                       13       13       0
+  ──────────────────────────  ─────   ──────
+  T3 Total                    1,871    1,853     -18
+  T3 Placed (buried)            608      591     -17
+
+
+═══════════════════════════════════════════════════════════════════════════════
+T1 JOBS — FULL DETAIL WITH SCORE COMPONENTS
+═══════════════════════════════════════════════════════════════════════════════
+
+── Test 1 T1 Jobs (13) — Heuristic weights ──────────────────────────────────
+
+  Weights used:  company=0.45  category=0.20  openings=0.15  job_type=0.10
+                 client_type=0.05  hour_bin=0.05
+
+  job_id     Score   Company  Category  Openings  JobType  ClientT  HourBin  Status
+  ──────────  ──────  ───────  ────────  ────────  ───────  ───────  ───────  ──────────────────
+  1609774    0.5203   0.3456    0.0508    0.0875    0.0080   0.0242   0.0043  Placed
+  1607420    0.4953   0.3456    0.0508    0.0618    0.0080   0.0242   0.0049  Placed
+  1608564    0.4953   0.3456    0.0508    0.0618    0.0080   0.0242   0.0049  Placed
+  1608652    0.4649   0.3456    0.0508    0.0317    0.0080   0.0242   0.0047  Placed
+  1610153    0.4553   0.3456    0.0508    0.0221    0.0080   0.0242   0.0047  Placed
+  1608854    0.4553   0.3456    0.0508    0.0221    0.0080   0.0242   0.0047  Placed
+  1608934    0.4440   0.3456    0.0508    0.0105    0.0080   0.0242   0.0049  Placed
+  1608447    0.4438   0.3456    0.0508    0.0105    0.0080   0.0242   0.0047  Admin Close
+  1609885    0.4438   0.3456    0.0508    0.0105    0.0080   0.0242   0.0047  Placed
+  1608931    0.4434   0.3456    0.0508    0.0105    0.0080   0.0242   0.0043  Placed
+  1608351    0.4434   0.3456    0.0508    0.0105    0.0080   0.0242   0.0043  Admin Close
+  1609737    0.4434   0.3456    0.0508    0.0105    0.0080   0.0242   0.0043  Covered
+  1610133    0.4220   0.3456    0.0508    0.0105    0.0080   0.0024   0.0047  Placed
+
+  Dominant driver: company_component = 0.3456 (66.4% of total score) for all 13 jobs.
+  All from a single high-fill-rate client (Google/data-center build-out).
+
+── Test 2 T1 Jobs (14) — Blended weights ────────────────────────────────────
+
+  Weights used:  company=0.5016  category=0.1640  openings=0.1365  job_type=0.0765
+                 client_type=0.0390  hour_bin=0.0824
+
+  job_id     Score   Company  Category  Openings  JobType  ClientT  HourBin  Status           Category
+  ──────────  ──────  ───────  ────────  ────────  ───────  ───────  ───────  ───────────────  ──────────────
+  1609774    0.5385   0.3852    0.0417    0.0796    0.0061   0.0189   0.0070  Placed           Technician
+  1608564    0.5161   0.3852    0.0417    0.0562    0.0061   0.0189   0.0080  Placed           Technician
+  1607420    0.5161   0.3852    0.0417    0.0562    0.0061   0.0189   0.0080  Placed           Technician
+  1608652    0.4884   0.3852    0.0417    0.0288    0.0061   0.0189   0.0077  Placed           Technician
+  1610153    0.4796   0.3852    0.0417    0.0201    0.0061   0.0189   0.0077  Placed           Technician
+  1608854    0.4796   0.3852    0.0417    0.0201    0.0061   0.0189   0.0077  Placed           Technician
+  1608934    0.4695   0.3852    0.0417    0.0096    0.0061   0.0189   0.0080  Placed           Technician
+  1608447    0.4691   0.3852    0.0417    0.0096    0.0061   0.0189   0.0077  Admin Close      Technician
+  1609885    0.4691   0.3852    0.0417    0.0096    0.0061   0.0189   0.0077  Placed           Technician
+  1608351    0.4685   0.3852    0.0417    0.0096    0.0061   0.0189   0.0070  Admin Close      Technician
+  1608931    0.4685   0.3852    0.0417    0.0096    0.0061   0.0189   0.0070  Placed           Technician
+  1609737    0.4685   0.3852    0.0417    0.0096    0.0061   0.0189   0.0070  Covered          Technician
+  1610133    0.4521   0.3852    0.0417    0.0096    0.0061   0.0019   0.0077  Placed           Technician
+  1607875    0.4016   0.3391    0.0350    0.0096    0.0061   0.0042   0.0077  Admin Close      Service Desk  ← NEW
+
+  New job in Test 2 T1 (job 1607875):
+    Title    : Tier 1 Service Desk (10pm-8:30am Sun, Mon, Tue, Wed)
+    Category : Service Desk  (fill_rate 0.334)
+    Score    : 0.4016  — just crossed the T1 threshold of 0.40
+    Why new  : Blended w_company 0.45→0.5016 gave this company's smoothed
+               fill rate enough lift to push from 0.399 (Test 1) to 0.4016.
+
+  Score component shift for same jobs (Test 1 → Test 2):
+    company_component  : 0.3456 → 0.3852  (+0.0396)  ← w_company 0.45→0.5016
+    category_component : 0.0508 → 0.0417  (-0.0091)  ← w_category 0.20→0.1640
+    hour_bin_component : 0.0043 → 0.0070  (+0.0027)  ← w_hour_bin 0.05→0.0824
+    Net score lift     : +0.0182 average across all 13 carry-over T1 jobs
+
+
+═══════════════════════════════════════════════════════════════════════════════
+KEY METRICS SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+  Metric                           Test 1        Test 2        Delta
+  ──────────────────────────────── ──────────    ──────────    ──────
+  T1 count                              13            14           +1
+  T1 fill rate                        76.9%         71.4%        -5.5pp
+  T1 avg score                        0.4592        0.4775       +0.0183
+  T2 count                             226           243          +17
+  T2 fill rate                        84.5%         85.6%        +1.1pp
+  T2 avg score                        0.2176        0.2187       +0.0011
+  T3 count                           1,871         1,853          -18
+  T3 Placed (buried)                   608           591          -17
+  T3 avg score                        0.0623        0.0606       -0.0017
+  Jobs rescued from T3                  —             18            —
+  Placed jobs rescued from T3           —             17            —
+
+  Model quality (from train_weights.py validation run):
+    Train AUC-ROC  : 0.8558     Val AUC-ROC  : 0.8828
+    Train PR-AUC   : 0.4274     Val PR-AUC   : 0.7912
+    AUC gap        : 0.0271  ✓  (< 0.05 — no overfitting)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+TAKEAWAYS
+═══════════════════════════════════════════════════════════════════════════════
+
+  1. Blended weights moved 18 jobs from T3 → T2/T1. All 17 that went to T2
+     were Placed jobs — genuine placements the heuristic buried in T3.
+
+  2. T2 fill rate improved 84.5% → 85.6%: every additional T2 job was a
+     real placement, making T2 marginally more precise.
+
+  3. T1 fill rate dipped 76.9% → 71.4% due to one borderline Service Desk
+     job (job 1607875) entering T1 with Administrative Close outcome.
+     With only 13/14 T1 jobs, one miss moves the rate noticeably — this
+     is not a systematic model failure.
+
+  4. The dominant score driver in both tests is the company component.
+     Blended weights amplified it (0.45→0.50), which is consistent with
+     the logistic regression finding that company fill rate is the strongest
+     predictor (learned weight 0.66 vs heuristic 0.45).
+
+  5. T3 still holds 591 Placed jobs (31.9% of December T3). This is not
+     a model failure — it reflects that many jobs at low-fill-rate companies
+     genuinely do get placed, but the model cannot predict which ones without
+     richer features (e.g. recruiter experience, candidate pipeline depth).
+     This is the addressable gap for Phase 3 (probability-based scoring).

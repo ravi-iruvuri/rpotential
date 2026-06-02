@@ -19,8 +19,8 @@
 --      'Intelligence', 'United States' → 'US' — happen at ingest).
 -- ============================================================================
 
-CREATE SCHEMA IF NOT EXISTS alerts;
-SET search_path = jop, public;
+CREATE SCHEMA IF NOT EXISTS rpotential;
+SET search_path = rpotential, public;
 
 
 -- ============================================================================
@@ -478,6 +478,7 @@ CREATE TABLE job_priority_scores (
     feature_version_id           INT  REFERENCES feature_lookup_version(version_id),
     model_version                TEXT,
 
+    source_row_hash              TEXT,                                  -- snapshot of jobs.source_row_hash at score time; drives idempotency guard
     computed_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -620,6 +621,21 @@ WITH derived AS (
 ),
 active_version AS (
     SELECT version_id FROM feature_lookup_version WHERE is_active LIMIT 1
+),
+-- Weights come from the active model_version row.
+-- Falls back to heuristic defaults if no model version is active.
+active_weights AS (
+    SELECT
+        COALESCE(w_company,     0.4500) AS w_company,
+        COALESCE(w_category,    0.2000) AS w_category,
+        COALESCE(w_openings,    0.1500) AS w_openings,
+        COALESCE(w_job_type,    0.1000) AS w_job_type,
+        COALESCE(w_client_type, 0.0500) AS w_client_type,
+        COALESCE(w_hour_bin,    0.0500) AS w_hour_bin
+    FROM model_versions WHERE is_active
+    UNION ALL
+    SELECT 0.4500, 0.2000, 0.1500, 0.1000, 0.0500, 0.0500
+    LIMIT 1
 )
 SELECT
     d.job_id,
@@ -633,25 +649,26 @@ SELECT
     ctfr.fill_rate                                   AS client_type_fill_rate,
     hb.fill_rate_weight                              AS hour_bin_weight,
 
-    -- weighted components (NULL inputs treated as 0)
-    COALESCE(cfr.smoothed_fill_rate, 0) * 0.45       AS company_component,
-    COALESCE(catfr.fill_rate,        0) * 0.20       AS category_component,
-    COALESCE(ow.fill_rate_weight,    0) * 0.15       AS openings_component,
-    COALESCE(jt.fill_rate_weight,    0) * 0.10       AS job_type_component,
-    COALESCE(ctfr.fill_rate,         0) * 0.05       AS client_type_component,
-    COALESCE(hb.fill_rate_weight,    0) * 0.05       AS hour_bin_component,
+    -- weighted components using active model weights
+    COALESCE(cfr.smoothed_fill_rate, 0) * aw.w_company      AS company_component,
+    COALESCE(catfr.fill_rate,        0) * aw.w_category     AS category_component,
+    COALESCE(ow.fill_rate_weight,    0) * aw.w_openings     AS openings_component,
+    COALESCE(jt.fill_rate_weight,    0) * aw.w_job_type     AS job_type_component,
+    COALESCE(ctfr.fill_rate,         0) * aw.w_client_type  AS client_type_component,
+    COALESCE(hb.fill_rate_weight,    0) * aw.w_hour_bin     AS hour_bin_component,
 
     -- final priority score in [0, 1]
     ROUND(
-        COALESCE(cfr.smoothed_fill_rate, 0) * 0.45 +
-        COALESCE(catfr.fill_rate,        0) * 0.20 +
-        COALESCE(ow.fill_rate_weight,    0) * 0.15 +
-        COALESCE(jt.fill_rate_weight,    0) * 0.10 +
-        COALESCE(ctfr.fill_rate,         0) * 0.05 +
-        COALESCE(hb.fill_rate_weight,    0) * 0.05
+        COALESCE(cfr.smoothed_fill_rate, 0) * aw.w_company     +
+        COALESCE(catfr.fill_rate,        0) * aw.w_category    +
+        COALESCE(ow.fill_rate_weight,    0) * aw.w_openings    +
+        COALESCE(jt.fill_rate_weight,    0) * aw.w_job_type    +
+        COALESCE(ctfr.fill_rate,         0) * aw.w_client_type +
+        COALESCE(hb.fill_rate_weight,    0) * aw.w_hour_bin
     , 4)::NUMERIC(5,4)                               AS priority_score
 FROM derived d
 CROSS JOIN active_version av
+CROSS JOIN active_weights aw
 LEFT JOIN company_fill_rate_lookup      cfr
        ON cfr.version_id  = av.version_id AND cfr.company_id  = d.company_id
 LEFT JOIN category_fill_rate_lookup     catfr
@@ -719,3 +736,39 @@ SELECT
 
     (EXTRACT(DOW FROM j.date_added) IN (0, 6))       AS is_weekend
 FROM jobs j;
+
+
+-- 6.7  Per-job routing detail for a given upload batch --------------------
+CREATE VIEW v_upload_routing_detail AS
+SELECT
+    j.upload_id,
+    j.job_id,
+    j.status,
+    r.current_tier,
+    r.routed_at,
+    r.sla_deadline,
+    r.is_stalled,
+    r.assigned_recruiter_queue,
+    ps.priority_score,
+    ps.scoring_method
+FROM jobs j
+JOIN job_routing            r  ON r.job_id    = j.job_id
+JOIN job_priority_scores    ps ON ps.score_id = r.last_score_id
+WHERE j.upload_id IS NOT NULL;
+
+
+-- 6.8  Tier summary aggregated by upload batch ----------------------------
+CREATE VIEW v_upload_routing_summary AS
+SELECT
+    j.upload_id,
+    r.current_tier,
+    COUNT(*)                                        AS job_count,
+    COUNT(*) FILTER (WHERE r.is_stalled)            AS stalled_count,
+    COUNT(*) FILTER (WHERE r.sla_deadline < now())  AS sla_breached_count,
+    ROUND(AVG(ps.priority_score), 4)                AS avg_priority_score
+FROM jobs j
+JOIN job_routing            r  ON r.job_id    = j.job_id
+JOIN job_priority_scores    ps ON ps.score_id = r.last_score_id
+WHERE j.upload_id IS NOT NULL
+GROUP BY j.upload_id, r.current_tier
+ORDER BY j.upload_id, r.current_tier;

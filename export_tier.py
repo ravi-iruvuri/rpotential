@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import sys
 
 import psycopg
@@ -79,15 +80,26 @@ def set_search_path(conn, schema: str) -> None:
         )
 
 
+ERROR_MESSAGES = {
+    "no_active_feature_version": "No active feature_lookup_version found. Run populate_feature_lookups.py --activate first.",
+    "invalid_job_id":            "One or more job IDs are not valid integers.",
+    "missing_arguments":         "Usage: export_tier.py <job_id> [job_id ...]",
+}
+
+
+def emit_error(code: str, detail: str | None = None) -> None:
+    err: dict = {"error": code, "message": ERROR_MESSAGES.get(code, code)}
+    if detail:
+        err["detail"] = detail
+    print(json.dumps(err, indent=2))
+
+
 def require_active_version(conn) -> int:
     with conn.cursor() as cur:
         cur.execute("SELECT version_id FROM feature_lookup_version WHERE is_active")
         row = cur.fetchone()
     if row is None:
-        sys.exit(
-            "error: no active feature_lookup_version. "
-            "Run populate_feature_lookups.py with --activate first."
-        )
+        raise RuntimeError("no_active_feature_version")
     return row[0]
 
 
@@ -98,26 +110,44 @@ def score_and_export(conn, job_ids: list[int]) -> list[dict]:
         return cur.fetchall()
 
 
-def print_table(rows: list[dict], requested: list[int]) -> None:
-    col_w = max(len("job_id"), max((len(str(r["job_id"])) for r in rows), default=0))
-    tier_w = max(len("tier_code"), max((len(str(r["current_tier"])) for r in rows), default=0))
+def print_job_table(rows: list[dict], requested: list[int],
+                    active_version: int | None = None,
+                    upload_id: int | None = None,
+                    total_jobs: int | None = None,
+                    scored_count: int | None = None) -> dict:
+    found_ids = {r["job_id"] for r in rows}
+    missing = [jid for jid in requested if jid not in found_ids]
 
-    header = f"{'job_id':<{col_w}}  {'tier_code':<{tier_w}}"
-    sep = "-" * len(header)
-    print(sep)
-    print(header)
-    print(sep)
+    routed = [
+        {
+            "job_id":       r["job_id"],
+            "status":       r.get("status"),
+            "tier":         r["current_tier"],
+            "score":        r.get("priority_score"),
+            "sla_deadline": str(r["sla_deadline"])[:16] if r.get("sla_deadline") else None,
+            "is_stalled":   r.get("is_stalled"),
+        }
+        for r in rows
+    ]
 
-    scored_ids = {r["job_id"] for r in rows}
-    for r in sorted(rows, key=lambda r: r["current_tier"]):
-        print(f"{r['job_id']:<{col_w}}  {r['current_tier']:<{tier_w}}")
+    summary: dict = {
+        "routed_count":    len(routed),
+        "not_found_count": len(missing),
+    }
+    if total_jobs is not None:
+        summary["total_jobs"]    = total_jobs
+        summary["scored_count"]  = scored_count
+        summary["skipped_count"] = total_jobs - (scored_count or 0)
 
-    missing = [jid for jid in requested if jid not in scored_ids]
-    for jid in missing:
-        print(f"{jid:<{col_w}}  {'NOT FOUND':<{tier_w}}")
+    result: dict = {"feature_lookup_version": str(active_version)}
+    if upload_id is not None:
+        result["upload_id"] = upload_id
+    result["routed"]    = routed
+    result["not_found"] = missing
+    result["summary"]   = summary
 
-    print(sep)
-    print(f"{len(rows)} scored  |  {len(missing)} not found")
+    print(json.dumps(result, indent=2, default=str))
+    return result
 
 
 def parse_job_ids(argv: list[str]) -> list[int]:
@@ -129,24 +159,30 @@ def parse_job_ids(argv: list[str]) -> list[int]:
                 try:
                     ids.append(int(part))
                 except ValueError:
-                    sys.exit(f"error: '{part}' is not a valid job_id integer")
+                    raise ValueError("invalid_job_id")
     if not ids:
-        sys.exit("usage: python export_tier.py <job_id> [job_id ...]")
+        raise ValueError("missing_arguments")
     return ids
 
 
 def main() -> int:
-    job_ids = parse_job_ids(sys.argv[1:])
-
-    with psycopg.connect(DSN) as conn:
-        set_search_path(conn, SCHEMA)
-        active_version = require_active_version(conn)
-        print(f"feature_lookup_version: {active_version}  |  jobs: {job_ids}\n")
-
-        rows = score_and_export(conn, job_ids)
-        conn.commit()
-
-    print_table(rows, job_ids)
+    try:
+        job_ids = parse_job_ids(sys.argv[1:])
+        with psycopg.connect(DSN) as conn:
+            set_search_path(conn, SCHEMA)
+            active_version = require_active_version(conn)
+            rows = score_and_export(conn, job_ids)
+            conn.commit()
+        print_job_table(rows, job_ids, active_version)
+    except ValueError as e:
+        emit_error(str(e))
+        return 1
+    except RuntimeError as e:
+        emit_error(str(e))
+        return 1
+    except Exception as e:
+        emit_error("connection_error", detail=str(e))
+        return 1
     return 0
 
 

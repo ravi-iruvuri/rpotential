@@ -1,0 +1,326 @@
+DYNAMIC FEEDBACK STRATEGY — JOB ORDER PRIORITY SCORING
+=======================================================
+rpotential · Priority Scoring & Routing System
+
+
+OVERVIEW
+--------
+The heuristic scoring formula assigns a priority score to each job order using
+six hand-tuned feature weights. Those weights were derived from correlation
+analysis at a single point in time. Dynamic feedback replaces or adjusts those
+weights using the system's own outcomes — specifically, which job orders were
+eventually Placed — so that the model improves with every new batch of data.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+1. WHY STATIC WEIGHTS FAIL OVER TIME
+═══════════════════════════════════════════════════════════════════════════════
+
+The original formula used hardcoded constants:
+
+  SCORE = 0.45 × company_fill_rate
+        + 0.20 × category_fill_rate
+        + 0.15 × openings_weight
+        + 0.10 × job_type_weight
+        + 0.05 × client_type_fill_rate
+        + 0.05 × hour_bin_weight
+
+These weights assume the relative importance of each feature is constant over
+time. In practice:
+
+  a) Market conditions shift (e.g., post-COVID demand for Technician roles
+     spikes → category weights should shift).
+  b) Client mix changes (new enterprise clients join, existing ones leave →
+     company fill-rate patterns change).
+  c) Recruiter behaviour changes (if T1 jobs now get placed faster, the signal
+     from hour_bin may grow stronger).
+  d) The weights were calibrated on 2023–2025 data. By 2027 they may
+     misrepresent the true drivers of placement.
+
+Without feedback, the model becomes stale and T1 precision degrades — the
+wrong jobs get priority attention.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+2. THE FEEDBACK SIGNAL — WHERE TRUTH COMES FROM
+═══════════════════════════════════════════════════════════════════════════════
+
+Every job eventually reaches a terminal status:
+  - Placed                      → positive outcome (model should have ranked this high)
+  - Administrative Close,
+    Cancelled, Declined,
+    Archive, Covered,
+    Filled by Client,
+    Filled by Competition       → negative outcomes
+
+Jobs with is_terminal = FALSE (On Hold, Accepting Candidates) are EXCLUDED
+from training because their final outcome is not yet known. The moment they
+transition to a terminal status, they become labelled training examples.
+
+This means feedback is passive and automatic: as recruiters work jobs and
+outcomes accumulate in the jobs table, the training set grows without any
+manual data entry.
+
+  Training set (as of May 2026):  39,954 terminal jobs  (9.0% placed)
+  Growth rate:                    ~1,000–2,000 new terminal jobs per month
+  Quarterly addition:             ~3,000–6,000 new labelled examples
+
+
+═══════════════════════════════════════════════════════════════════════════════
+3. WHAT THE LOGISTIC REGRESSION FOUND
+═══════════════════════════════════════════════════════════════════════════════
+
+Running logistic regression (scikit-learn, class_weight='balanced') on all
+39,954 terminal jobs produced:
+
+  AUC-ROC : 0.8488   (random baseline = 0.50, perfect = 1.0)
+  PR-AUC  : 0.4637   (random baseline = 0.09  given 9% class rate)
+
+AUC of 0.85 means: pick any random Placed job and any random non-Placed job —
+the model ranks the Placed job higher 85% of the time. This confirms the six
+features contain strong real signal.
+
+Learned vs heuristic weights (normalised from standardised LR coefficients):
+
+  Feature                  Heuristic  Learned   Blended   Direction   Interpretation
+  -----------------------  ---------  -------   -------   ---------   ----------------------------------------
+  Company fill rate          0.45      0.5792    0.5016    ↑ UP        Most predictive — underweighted by heuristic
+  Category fill rate         0.20      0.1099    0.1640    ↓ DOWN      Overweighted; category matters but less
+  Openings                   0.15      0.1163    0.1365    ↓ DOWN      Slightly overweighted
+  Job type                   0.10      0.0412    0.0765    ↓ DOWN      Significantly overweighted
+  Client type fill rate      0.05      0.0225    0.0390    ↓ DOWN      Overweighted
+  Hour bin                   0.05      0.1310    0.0824    ↑ UP        Time-of-posting more predictive than assumed
+
+Key insight: The data confirms that WHICH COMPANY placed the order is by far
+the dominant predictor of success. The heuristic had the right instinct but
+was too conservative — company weight should be ~0.58 not 0.45.
+
+Hour bin surprise: Jobs posted in the afternoon slot (16:00–17:59) have
+meaningfully higher placement rates. This is likely because afternoon postings
+reach recruiters during their most productive window before end-of-day.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+4. TIER SIMULATIONS — FOUR APPROACHES COMPARED
+═══════════════════════════════════════════════════════════════════════════════
+
+All simulated on the 39,954 terminal job training set:
+
+  Approach                          T1 Jobs   T1 %   T1 Fill Rate   T2 Fill Rate
+  --------------------------------  -------   -----  ------------   ------------
+  Heuristic (original)                  295   0.7%        0.8305         0.3595
+  Blended  (60% heur + 40% learned)     312   0.8%        0.8269         0.3446
+  Fully learned LR weights              498   1.2%        0.7811         0.3333
+  Probability-based (LR score)          293   0.7%        0.8328         0.3509
+
+"T1 Fill Rate" = fraction of T1 jobs that were eventually Placed.
+The probability-based approach gives the best T1 precision (83.3%) and is
+the Phase 3 target. Blended is the safe, immediate deployment.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+5. WHAT WAS ACTUALLY DEPLOYED — FULL PROGRESSION
+═══════════════════════════════════════════════════════════════════════════════
+
+All changes applied to upload_id = 1 (42,422 jobs):
+
+  Step                              T1      T2      T3      What changed
+  --------------------------------  ------  ------  ------  ----------------------------------
+  1. Original heuristic               296   5,016  37,110   Hardcoded weights 0.45/0.20/...
+  2. + Category imputation             299   5,390  36,733   15,159 NULL categories filled
+  3. + Blended weights (live)          318   5,663  36,441   View reads from model_versions
+  --------------------------------  ------  ------  ------
+  Net movement out of T3                                -669
+
+Step 2 detail (impute_categories.py):
+  - Tier 1 (clean-title exact match): 12,301 jobs
+  - Tier 2 (keyword rules):            2,858 jobs
+  - Skipped (noisy titles):               10 jobs
+  - Unresolved (remain NULL):          1,612 jobs (9.6%)
+  - Most imputed category: Software Development (6,363)
+
+Step 3 detail — deployed blended weights:
+  w_company      = 0.5016
+  w_category     = 0.1640
+  w_openings     = 0.1365
+  w_job_type     = 0.0765
+  w_client_type  = 0.0390
+  w_hour_bin     = 0.0824
+
+
+═══════════════════════════════════════════════════════════════════════════════
+6. HOW THE FEEDBACK LOOP IS WIRED (TECHNICAL)
+═══════════════════════════════════════════════════════════════════════════════
+
+The key architectural change: v_priority_score_calc no longer has hardcoded
+weight constants. It reads weights from the active row in model_versions at
+query time via a CROSS JOIN:
+
+  active_weights AS (
+      SELECT w_company, w_category, w_openings,
+             w_job_type, w_client_type, w_hour_bin
+      FROM model_versions WHERE is_active
+      UNION ALL
+      SELECT 0.4500, 0.2000, 0.1500, 0.1000, 0.0500, 0.0500  -- fallback
+      LIMIT 1
+  )
+
+This means: updating model_versions.is_active to a new row immediately
+changes the weights used by every subsequent score_and_route run — no view
+DDL changes required.
+
+Schema changes made:
+  migration_003_add_score_hash.sql   — adds source_row_hash to job_priority_scores
+                                       (drives idempotency guard in score_and_route)
+  migration_004_model_weights.sql    — adds w_company, w_category, w_openings,
+                                       w_job_type, w_client_type, w_hour_bin
+                                       to model_versions (defaults = heuristic values)
+
+Scripts involved:
+  impute_categories.py   — fills NULL category on jobs (Tier 1 title match + Tier 2 keywords)
+  train_weights.py       — trains logistic regression, produces blended weights, saves to DB
+  score_and_route.py     — reads weights from view, scores jobs, writes routing state
+
+
+═══════════════════════════════════════════════════════════════════════════════
+7. THREE-PHASE IMPLEMENTATION ROADMAP
+═══════════════════════════════════════════════════════════════════════════════
+
+─────────────────────────────────────────────────────────────
+PHASE 1 — BLENDED WEIGHTS  (DEPLOYED ✓)
+─────────────────────────────────────────────────────────────
+
+Status: Complete. Blended weights (60% heuristic + 40% learned) are live in
+model_versions and active in v_priority_score_calc.
+
+To re-deploy after each quarterly retrain:
+  python train_weights.py --save --schema rpotential --dsn '...'
+  python score_and_route.py --all-jobs --force --schema rpotential --dsn '...'
+
+
+─────────────────────────────────────────────────────────────
+PHASE 2 — QUARTERLY RETRAINING  (operational cadence)
+─────────────────────────────────────────────────────────────
+
+Cadence: Every quarter (Jan, Apr, Jul, Oct), run the full pipeline:
+
+  Step 1 — Refresh feature lookups
+    python populate_feature_lookups.py \
+      --start <quarter_start> --end <quarter_end> \
+      --replace --activate --schema rpotential --dsn '...'
+
+    This recomputes per-company, per-category fill rates from the latest
+    completed quarter. Companies that improved their fill rate in Q4 will
+    score higher in Q1.
+
+  Step 2 — Retrain weights
+    python train_weights.py --save --schema rpotential --dsn '...'
+
+    Uses ALL terminal jobs accumulated to date. As N grows (~4,000 per
+    quarter), learned weights become more stable. Shift blend ratio over time:
+
+      Quarter 1–2 post-launch:  60% heuristic + 40% learned  (current)
+      Quarter 3–4:              40% heuristic + 60% learned
+      Quarter 5+:               10% heuristic + 90% learned
+      AUC stable > 0.87:        Switch to Phase 3
+
+  Step 3 — Rescore active jobs
+    python score_and_route.py --all-jobs --force --schema rpotential --dsn '...'
+
+  Step 4 — Validate
+    Compare T1 fill rate this quarter vs last. If T1 fill rate drops
+    > 5 percentage points, investigate before promoting the new weights.
+
+
+─────────────────────────────────────────────────────────────
+PHASE 3 — PROBABILITY-BASED SCORING  (production target)
+─────────────────────────────────────────────────────────────
+
+What changes:
+  Instead of a linear weighted score, the model computes a
+  predicted_fill_probability directly from logistic regression output.
+  This is stored in job_priority_scores.predicted_fill_probability
+  (column already reserved in the schema).
+
+  scoring_method value: 'slm_v1'
+
+Why it is better than a linear score:
+  - The linear score is bounded by weight assumptions.
+  - A probability score is calibrated to actual placement rates.
+    P(placed) = 0.45 is directly interpretable: 45% chance of fill.
+  - Tier thresholds become stable and business-settable:
+      T1 = top 0.7% by probability  → threshold 0.996
+      T2 = next 12.7%               → threshold 0.648
+    These do not need to be re-tuned when weights shift.
+
+Simulation on terminal jobs:
+  Tier   Jobs      %   Placed  Fill Rate
+  ------  --------  ------  --------  ----------
+  T1       293      0.7%     244       0.8328   ← best T1 precision of all approaches
+  T2     5,341     13.4%   1,874       0.3509
+  T3    34,320     85.9%   1,477       0.0430
+
+
+═══════════════════════════════════════════════════════════════════════════════
+8. ACTIVE FEEDBACK — RECRUITER CORRECTIONS
+═══════════════════════════════════════════════════════════════════════════════
+
+Passive feedback (Section 2) captures outcomes automatically. Active feedback
+captures recruiter knowledge that the model cannot see.
+
+Use case: A T3 job is manually escalated because the recruiter knows the client
+is expanding headcount — information not in the data.
+
+Proposed job_feedback table:
+  job_id        BIGINT REFERENCES jobs(job_id)
+  feedback_type TEXT   CHECK IN ('escalate','deprioritize','correct_tier')
+  correct_tier  CHAR(2) REFERENCES priority_tier_ref(tier)
+  submitted_by  TEXT
+  submitted_at  TIMESTAMPTZ DEFAULT now()
+  notes         TEXT
+
+Each feedback row creates a training signal: if a recruiter marks a T3 job
+as "should be T1" and it later gets Placed, that job gets double weight in
+the next training run. Feedback events are logged with score_id so they are
+traceable to the specific model version that produced the wrong tier.
+
+This is an optional Phase 3 enhancement once the probability scorer is stable.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+9. KEY METRICS TO TRACK EACH QUARTER
+═══════════════════════════════════════════════════════════════════════════════
+
+  Metric                     Target        Warning threshold
+  -------------------------  ------------  -----------------
+  AUC-ROC                    > 0.85        < 0.80
+  PR-AUC                     > 0.45        < 0.35
+  T1 fill rate               > 80%         < 70%
+  T2 fill rate               > 30%         < 20%
+  T3 fill rate               < 6%          > 10%
+  % T3 jobs Placed           < 5%          > 8%
+  Weight drift (company)     0.45–0.65     outside range
+  Training set size          > 10,000      < 5,000
+
+Weight drift monitoring: if the learned company weight drops below 0.40,
+investigate whether data quality has degraded (e.g., company_id mapping errors
+causing fill rates to be miscalculated).
+
+
+═══════════════════════════════════════════════════════════════════════════════
+10. SUMMARY — THE FULL LOOP IN ONE PARAGRAPH
+═══════════════════════════════════════════════════════════════════════════════
+
+Jobs are scored when uploaded using weights stored in model_versions. They are
+worked by recruiters. As they close (Placed, Cancelled, etc.), they become
+labelled training examples in the jobs table with is_terminal = TRUE. Every
+quarter, populate_feature_lookups refreshes per-company and per-category fill
+rates from those outcomes, and train_weights retrains the logistic regression
+to find the feature combination that best predicts placement. The new blended
+weights are upserted into model_versions; because v_priority_score_calc reads
+weights from that table at query time, the next score_and_route run immediately
+uses the updated weights with no schema changes required. Over time, as the
+training set grows from ~40K to ~60K to ~100K labelled examples, the blend
+ratio shifts from 60% heuristic toward 90% learned, and eventually Phase 3
+switches to direct probability scoring — meaning the tier assigned to a job
+represents an explicit estimated probability that it will be filled.

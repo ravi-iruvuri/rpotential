@@ -1,0 +1,252 @@
+DECEMBER 2025 SCORING TESTS — HEURISTIC vs BLENDED MODEL
+==========================================================
+rpotential · Upload ID: 1 · Test window: 2025-12-01 → 2025-12-30
+Feature lookup version: 2  (training period: 2023-01-01 → 2025-11-30)
+Purpose: validate scoring on held-out December data before blending
+         model weights into production.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+TEST 1 — HEURISTIC WEIGHTS (model_versions inactive)
+         scoring_method = heuristic_v1   feature_version_id = 2
+═══════════════════════════════════════════════════════════════════════════════
+
+Setup:
+  - feature_lookup_version 2 activated (fill rates from 2023-01-01 to 2025-11-30)
+  - model_versions.is_active = FALSE  → v_priority_score_calc falls back to
+    hardcoded heuristic weights: 0.45 / 0.20 / 0.15 / 0.10 / 0.05 / 0.05
+
+Tier distribution:
+
+  Tier     Jobs  % of Dec  Avg Score      Min      Max
+  ──────  ─────  ────────  ─────────  ───────  ───────
+  T1         13     0.62%     0.4592   0.4220   0.5203
+  T2        226    10.71%     0.2176   0.1543   0.3754
+  T3      1,871    88.67%     0.0623   0.0255   0.1496
+  ──────  ─────  ────────
+  TOTAL   2,110
+
+Status breakdown by tier:
+
+  T1 (13 jobs):
+    Placed                10
+    Administrative Close   2
+    Covered                1
+
+  T2 (226 jobs):
+    Placed               191
+    Administrative Close  14
+    On Hold                6
+    Filled by Competition  4
+    Filled by Client       4
+    Covered                3
+    Cancelled              2
+    Accepting Candidates   2
+
+  T3 (1,871 jobs):
+    Administrative Close 950
+    Placed               608
+    Archive              175
+    On Hold               37
+    Covered               21
+    Accepting Candidates  20
+    Cancelled             16
+    Filled by Client      16
+    Filled by Competition 15
+    Declined              13
+
+All 13 T1 jobs — Data Center Technician / Operations Engineer roles:
+
+  job_id      tier   score   status                 category    title
+  ──────────  ────   ──────  ─────────────────────  ──────────  ──────────────────────────────────────
+  1609774     T1     0.5203  Placed                 Technician  GOG1JP00003019 - Data Center Technician
+  1607420     T1     0.4953  Placed                 Technician  GOG1JP00002797 - Data Center Technician
+  1608564     T1     0.4953  Placed                 Technician  GOG1JP00002963 - Data Center Technician
+  1608652     T1     0.4649  Placed                 Technician  GOG1JP00002721 - Data Center Operations
+  1610153     T1     0.4553  Placed                 Technician  GOG1JP00003002 - Data Center Technician
+  1608854     T1     0.4553  Placed                 Technician  GOG1JP00002852 - Data Center Technician
+  1608934     T1     0.4440  Placed                 Technician  GOG1JP00002961 - Data Center Technician
+  1608447     T1     0.4438  Administrative Close   Technician  GOG1JP00002909 - Data Center Technician
+  1609885     T1     0.4438  Placed                 Technician  Data Center Technician (Junior)
+  1608931     T1     0.4434  Placed                 Technician  GOG1JP00002953 - Data Center Technician
+  1608351     T1     0.4434  Administrative Close   Technician  GOG1JP00002906 - Data Center Technician
+  1609737     T1     0.4434  Covered                Technician  GOG1JP00002272 - Data Center Technician
+  1610133     T1     0.4220  Placed                 Technician  GOG1JP00003017 - Data Center Operations
+
+Key observations (Test 1):
+  - T1 is 100% Technician / Data Center roles from a single high-fill-rate client.
+  - 10 of 13 T1 jobs ended Placed → T1 fill rate = 76.9%
+  - T2 fill rate = 191/226 = 84.5%  (very high — December was a strong month)
+  - T3 has 608 Placed jobs (32.5%) — the dominant problem: high-placement
+    December jobs are not being surfaced into T1/T2 by the heuristic.
+
+SQL used for verification:
+  SELECT r.current_tier,
+         COUNT(*) AS jobs,
+         ROUND(100.0*COUNT(*)/SUM(COUNT(*)) OVER(),2) AS pct,
+         ROUND(AVG(ps.priority_score),4) AS avg_score,
+         MIN(ps.priority_score) AS min_score,
+         MAX(ps.priority_score) AS max_score,
+         ps.scoring_method, ps.feature_version_id
+  FROM rpotential.jobs j
+  JOIN rpotential.job_routing r          ON r.job_id    = j.job_id
+  JOIN rpotential.job_priority_scores ps ON ps.score_id = r.last_score_id
+  WHERE j.upload_id = 1
+    AND j.date_added >= '2025-12-01'
+    AND j.date_added <  '2025-12-31'
+  GROUP BY r.current_tier, ps.scoring_method, ps.feature_version_id
+  ORDER BY r.current_tier;
+
+
+═══════════════════════════════════════════════════════════════════════════════
+TEST 2 — BLENDED MODEL WEIGHTS (model_versions active)
+         scoring_method = heuristic_v1   feature_version_id = 2
+═══════════════════════════════════════════════════════════════════════════════
+
+Setup:
+  - feature_lookup_version 2 remains active (same training-period fill rates)
+  - model_versions.is_active = TRUE  → v_priority_score_calc reads blended weights:
+      w_company      = 0.5016  (was 0.45)
+      w_category     = 0.1640  (was 0.20)
+      w_openings     = 0.1365  (was 0.15)
+      w_job_type     = 0.0765  (was 0.10)
+      w_client_type  = 0.0390  (was 0.05)
+      w_hour_bin     = 0.0824  (was 0.05)
+
+Tier distribution:
+
+  Tier     Jobs  % of Dec  Avg Score      Min      Max
+  ──────  ─────  ────────  ─────────  ───────  ───────
+  T1         14     0.66%     0.4775   0.4016   0.5385
+  T2        243    11.52%     0.2187   0.1500   0.3994
+  T3      1,853    87.82%     0.0606   0.0239   0.1497
+  ──────  ─────  ────────
+  TOTAL   2,110
+
+Status breakdown by tier:
+
+  T1 (14 jobs):
+    Placed                10
+    Administrative Close   3
+    Covered                1
+
+  T2 (243 jobs):
+    Placed               208
+    Administrative Close  14
+    On Hold                6
+    Filled by Competition  4
+    Filled by Client       4
+    Covered                3
+    Cancelled              2
+    Accepting Candidates   2
+
+  T3 (1,853 jobs):
+    Administrative Close 949
+    Placed               591
+    Archive              175
+    On Hold               37
+    Covered               21
+    Accepting Candidates  20
+    Cancelled             16
+    Filled by Client      16
+    Filled by Competition 15
+    Declined              13
+
+All 14 T1 jobs:
+
+  job_id      tier   score   status                 category    title
+  ──────────  ────   ──────  ─────────────────────  ──────────  ──────────────────────────────────────
+  1609774     T1     0.5385  Placed                 Technician  GOG1JP00003019 - Data Center Technician (Junior)
+  1608564     T1     0.5161  Placed                 Technician  GOG1JP00002963 - Data Center Technician (Junior)
+  1607420     T1     0.5161  Placed                 Technician  GOG1JP00002797 - Data Center Technician (Junior)
+  1608652     T1     0.4884  Placed                 Technician  GOG1JP00002721 - Data Center Operations Engineer
+  1610153     T1     0.4796  Placed                 Technician  GOG1JP00003002 - Data Center Technician (Junior)
+  1608854     T1     0.4796  Placed                 Technician  GOG1JP00002852 - Data Center Technician (Junior)
+  1608934     T1     0.4695  Placed                 Technician  GOG1JP00002961 - Data Center Technician (Junior)
+  1608447     T1     0.4691  Administrative Close   Technician  GOG1JP00002909 - Data Center Technician (Junior)
+  1609885     T1     0.4691  Placed                 Technician  Data Center Technician (Junior) - PRY
+  1608351     T1     0.4685  Administrative Close   Technician  GOG1JP00002906 - Data Center Technician (Junior)
+  1608931     T1     0.4685  Placed                 Technician  GOG1JP00002953 - Data Center Technician (Junior)
+  1609737     T1     0.4685  Covered                Technician  GOG1JP00002272 - Data Center Technician (Junior)
+  1610133     T1     0.4521  Placed                 Technician  GOG1JP00003017 - Data Center Operations Assembler
+  1607875     T1     0.4016  Administrative Close   Service Desk  Tier 1 Service Desk (10pm-8:30am Sun-Wed)  ← NEW
+
+Key observations (Test 2):
+  - One new job entered T1: job 1607875 "Tier 1 Service Desk" (Service Desk
+    category, score 0.4016). Blended weights raised the company component
+    (w_company 0.45→0.5016) enough to push this job above the T1 threshold.
+  - T2 gained 17 jobs (226→243): the blended company + hour_bin weights
+    promoted borderline T3 jobs into T2.
+  - T2 Placed count rose from 191→208 (+17 correctly identified placements).
+
+
+═══════════════════════════════════════════════════════════════════════════════
+COMPARISON — TEST 1 vs TEST 2
+feature_lookup_version = 2  (2023-01-01 → 2025-11-30)
+December 2025 test window: 2025-12-01 → 2025-12-30  (2,110 jobs)
+═══════════════════════════════════════════════════════════════════════════════
+
+  Metric                      Test 1 Heuristic   Test 2 Blended     Delta
+  ─────────────────────────── ────────────────   ──────────────     ─────
+  T1 jobs                               13                14           +1
+  T1 %                                0.62%             0.66%       +0.04pp
+  T1 Placed                             10                10            0
+  T1 fill rate                        76.9%             71.4%        -5.5pp
+  T1 avg score                        0.4592            0.4775       +0.0183
+  T2 jobs                              226               243          +17
+  T2 %                               10.71%            11.52%       +0.81pp
+  T2 Placed                            191               208          +17
+  T2 fill rate                        84.5%             85.6%        +1.1pp
+  T2 avg score                        0.2176            0.2187       +0.0011
+  T3 jobs                            1,871             1,853          -18
+  T3 %                               88.67%            87.82%       -0.85pp
+  T3 Placed                            608               591          -17
+  T3 avg score                        0.0623            0.0606       -0.0017
+
+Key takeaways:
+  1. Blended weights moved 18 jobs out of T3 and into T2 (+17) and T1 (+1).
+     All 17 T2 additions were Placed jobs — correctly identified placements
+     that the heuristic left in T3.
+
+  2. T1 fill rate dropped slightly (76.9% → 71.4%) because one new job
+     (Service Desk, job 1607875) entered T1 with Administrative Close outcome.
+     With only 13/14 T1 jobs, a single miss moves the fill rate noticeably.
+
+  3. T2 fill rate improved (84.5% → 85.6%): the 17 additional T2 jobs were
+     all Placed, making T2 marginally more precise.
+
+  4. T3 Placed count fell from 608 → 591 (-17), meaning 17 fewer placements
+     are buried in the deprioritised queue — a direct reduction in missed
+     opportunities.
+
+  5. The AUC-ROC on this December validation set = 0.8828 (from train_weights.py),
+     vs train AUC 0.8558.  Gap = 0.0271 — well within the ≤0.05 overfit
+     threshold. The model generalises correctly to December data.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+CONFIGURATION REFERENCE
+═══════════════════════════════════════════════════════════════════════════════
+
+Active after Test 2:
+  feature_lookup_version : 2  (2023-01-01 → 2025-11-30)   is_active = TRUE
+  model_versions         : logistic_v1                     is_active = TRUE
+  Blended weights        : company=0.5016  category=0.1640  openings=0.1365
+                           job_type=0.0765  client_type=0.0390  hour_bin=0.0824
+
+Commands used:
+  # Activate training feature lookup version
+  UPDATE rpotential.feature_lookup_version SET is_active = FALSE WHERE is_active;
+  UPDATE rpotential.feature_lookup_version SET is_active = TRUE  WHERE version_id = 2;
+
+  # Test 1 — heuristic (model_versions inactive)
+  UPDATE rpotential.model_versions SET is_active = FALSE WHERE is_active;
+  python score_and_route.py --upload-id 1 --force \
+    --date-start 2025-12-01 --date-end 2025-12-30 \
+    --schema rpotential --dsn '...'
+
+  # Test 2 — blended model (model_versions active)
+  UPDATE rpotential.model_versions SET is_active = TRUE WHERE model_version = 'logistic_v1';
+  python score_and_route.py --upload-id 1 --force \
+    --date-start 2025-12-01 --date-end 2025-12-30 \
+    --schema rpotential --dsn '...'
