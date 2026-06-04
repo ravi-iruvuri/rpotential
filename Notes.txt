@@ -37,12 +37,11 @@ see how many rows would be rejected before committing anything.
 Dry-run (validates without writing):
 
     ./myenv/bin/python load_pipeline.py \
-        --jobs       'Jobs Data - Prasad.xlsx - Jobs Report.csv' \
-        --subs       'Jobs Data - Prasad.xlsx - Client Subs.csv' \
-        --placements 'Jobs Data - Prasad.xlsx - Placements.csv' \
-        --starts     'Jobs Data - Prasad.xlsx - Starts.csv' \
-        --schema jop --dsn '...' \
-        --dry-run
+        --jobs       '/Users/ravindranathiruvuri/Downloads/Jobs Data - Prasad.xlsx - Jobs Report.csv' \
+        --subs       '/Users/ravindranathiruvuri/Downloads/Jobs Data - Prasad.xlsx - Client Subs.csv' \
+        --placements '/Users/ravindranathiruvuri/Downloads/Jobs Data - Prasad.xlsx - Placements.csv' \
+        --starts     '/Users/ravindranathiruvuri/Downloads/Jobs Data - Prasad.xlsx - Starts.csv' \
+        --schema rpotential --dsn 'postgresql://neondb_owner:npg_5Zwp0SHDabWL@ep-twilight-grass-akoi1hzc-pooler.c-3.us-west-2.aws.neon.tech/neondb'
 
 Real run (drop --dry-run):
 
@@ -71,9 +70,9 @@ the per-company / per-category / per-skill / per-client_type fill rates.
 
     ./myenv/bin/python populate_feature_lookups.py \
         --start 2023-01-01 --end 2025-12-31 \
-        --schema jop --activate \
+        --schema rpotential --activate \
         --notes "v1 heuristic baseline" \
-        --dsn '...'
+        --dsn 'postgresql://neondb_owner:npg_5Zwp0SHDabWL@ep-twilight-grass-akoi1hzc-pooler.c-3.us-west-2.aws.neon.tech/neondb'
 
 Quarterly recompute — same window or extended, replace prior version:
 
